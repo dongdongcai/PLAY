@@ -36,6 +36,7 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 			worker := <-registerChan
 			ok := call(worker, "Worker.DoTask", DoTaskArgs{jobName, mapFiles[taskNum], phase, taskNum, n_other}, nil)
 			if ok {
+				//Note: Use go routine here since the channel is unbuffered!!!!!
 				go func() {
 					registerChan <- worker
 				}()

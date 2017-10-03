@@ -22,7 +22,7 @@ func mapF(filename string, contents string) []mapreduce.KeyValue {
 		return !unicode.IsLetter(c) && !unicode.IsNumber(c)
 	}
 	for _, key := range strings.FieldsFunc(contents, f) {
-		kvs = append(kvs, mapreduce.KeyValue{key, "1"})
+		kvs = append(kvs, mapreduce.KeyValue{key, "1"}) //TODO: can be optimized by doing summing up in map phase.
 	}
 	return kvs
 }

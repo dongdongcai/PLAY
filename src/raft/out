@@ -1,0 +1,9 @@
+Test (2A): initial election ...
+--- FAIL: TestInitialElection2A (0.50s)
+	config.go:306: servers disagree on term
+Test (2A): election after network failure ...
+--- FAIL: TestReElection2A (11.51s)
+	config.go:293: expected one leader, got none
+FAIL
+exit status 1
+FAIL	raft	12.025s

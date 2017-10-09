@@ -62,6 +62,7 @@ type Raft struct {
 	currentTerm int
 	voteFor     int
 	state       int
+	voteCount   int
 	hbchan      chan bool
 	elecchan    chan bool
 	winner      chan bool
@@ -151,19 +152,24 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	//DPrintf("%t", rf.getLastLogTerm() < args.LastLogTerm || rf.getLastLogTerm() == args.LastLogTerm && (len(rf.log)-1) <= args.LastLogIndex)
 	if rf.currentTerm > args.Term {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
-		//DPrintf("%i not vote for %i for reason 1", rf.me, args.CandidateId)
-	} else if (rf.getLastLogTerm() < args.LastLogTerm || rf.getLastLogTerm() == args.LastLogTerm && (len(rf.log)-1) <= args.LastLogIndex) && (rf.voteFor == -1 || rf.voteFor == args.CandidateId) {
+		return
+	}
+
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.state = STATE_FOLLOWER
+		rf.voteFor = -1
+	}
+
+	if (rf.getLastLogTerm() < args.LastLogTerm || rf.getLastLogTerm() == args.LastLogTerm && (len(rf.log)-1) <= args.LastLogIndex) && (rf.voteFor == -1 || rf.voteFor == args.CandidateId) {
 		rf.voteFor = args.CandidateId
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = true
 		rf.elecchan <- true
-		DPrintf("%d vote for %d", rf.me, args.CandidateId)
 	} else {
-		//DPrintf("%d not vote for %d for reason 2", rf.me, args.CandidateId)
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 	}
@@ -204,12 +210,18 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 		if reply.Term > rf.currentTerm {
 			rf.currentTerm = reply.Term
 			rf.state = STATE_FOLLOWER
-			return false
+			rf.voteFor = -1
+			return ok
 		} else if reply.VoteGranted {
-			return true
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+			rf.voteCount++
+			if rf.voteCount > len(rf.peers)/2 && rf.state == STATE_CANDIDATE {
+				rf.winner <- true
+			}
 		}
 	}
-	return false
+	return ok
 }
 
 type AppendEntriesArgs struct {
@@ -230,6 +242,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Term = rf.currentTerm
 		reply.Success = false
 	} else {
+		rf.voteFor = -1
+		rf.state = STATE_FOLLOWER
 		rf.currentTerm = args.Term
 		reply.Success = true
 	}
@@ -239,6 +253,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	if ok {
 		if reply.Term > rf.currentTerm {
+			rf.voteFor = -1
 			rf.state = STATE_FOLLOWER
 			rf.currentTerm = reply.Term
 		}
@@ -289,25 +304,25 @@ func (rf *Raft) heartBeatService() {
 	}
 }
 
+//TODO: Make election time shorter
 func (rf *Raft) startElection() {
-	DPrintf("%d start election", rf.me)
-	voteCount := 1
+	rf.voteCount = 1
 	for i := 0; i < len(rf.peers); i++ {
 		if rf.state == STATE_CANDIDATE && i != rf.me {
 			var reply RequestVoteReply
 			args := RequestVoteArgs{rf.currentTerm, rf.me, len(rf.log) - 1, rf.getLastLogTerm()}
-			res := rf.sendRequestVote(i, &args, &reply)
-			if res {
-				voteCount++
-				if voteCount > len(rf.peers)/2 {
-					DPrintf("%d is now leader", rf.me)
-					rf.winner <- true
-				}
-			}
+			go rf.sendRequestVote(i, &args, &reply)
 		}
 	}
 }
 
+func makeRandomNumber() int64 {
+	source := rand.NewSource(time.Now().UnixNano())
+	generator := rand.New(source)
+	return generator.Int63n(300) + 200
+}
+
+//IMPORTANT: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
 //
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -327,6 +342,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 	rf.currentTerm = 0
 	rf.voteFor = -1
+	rf.voteCount = 0
 	rf.state = STATE_FOLLOWER
 	rf.elecchan = make(chan bool)
 	rf.hbchan = make(chan bool)
@@ -334,6 +350,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.log = append(rf.log, LogEntry{0})
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.initNextIndex()
+	rand.Seed(time.Now().UTC().UnixNano())
 	// Your initialization code here (2A, 2B, 2C).
 	//TODO: Reset votefor
 	go func() {
@@ -345,9 +362,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			case STATE_FOLLOWER:
 				select {
 				case <-rf.hbchan:
-					rf.voteFor = -1
 				case <-rf.elecchan:
-				case <-time.After(time.Millisecond * (time.Duration(rand.Int63n(251) + 250))):
+				case <-time.After(time.Millisecond * (time.Duration(makeRandomNumber()))):
 					rf.state = STATE_CANDIDATE
 				}
 			case STATE_CANDIDATE:
@@ -360,9 +376,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				case <-rf.winner:
 					go rf.heartBeatService()
 					rf.state = STATE_LEADER
-				case <-time.After(time.Millisecond * (time.Duration(rand.Int63n(251) + 250))):
+				case <-time.After(time.Millisecond * (time.Duration(makeRandomNumber()))):
 				}
-				rf.voteFor = -1
 			}
 		}
 	}()

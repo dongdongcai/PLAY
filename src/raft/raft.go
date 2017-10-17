@@ -70,6 +70,7 @@ type Raft struct {
 	hbchan      chan bool
 	elecchan    chan bool
 	winner      chan bool
+	commitchan  chan bool
 	log         []LogEntry
 	nextIndex   []int
 	matchIndex  []int
@@ -267,13 +268,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.log[args.PrevLogIndex+1+index] = entry
 		}
 	}
-
 	if args.LeaderCommit > rf.commitIndex {
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
 		if len(rf.log)-1 < args.LeaderCommit {
 			rf.commitIndex = len(rf.log) - 1
 		} else {
 			rf.commitIndex = args.LeaderCommit
 		}
+		rf.commitchan <- true
 	}
 }
 
@@ -328,17 +331,20 @@ func (rf *Raft) Kill() {
 }
 
 //TODO: combine heartBeatService and replicationService
-//TODO: Sort matchIndex to advance primary's commitIndex
 func (rf *Raft) advanceCommitIndex() {
 	var tmp []int
 	copy(tmp, rf.matchIndex)
 	sort.Ints(tmp)
-	if rf.log[tmp[len(tmp)/2]] == rf.currentTerm {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.log[tmp[len(tmp)/2]].term == rf.currentTerm {
 		rf.commitIndex = tmp[len(tmp)/2]
+		rf.commitchan <- true
 	}
 }
 
 func (rf *Raft) replicationService() {
+	rf.advanceCommitIndex()
 	for i := 0; i < len(rf.peers); i++ {
 		if i != rf.me && len(rf.log) > rf.nextIndex[i] {
 			var reply AppendEntriesReply
@@ -349,6 +355,7 @@ func (rf *Raft) replicationService() {
 }
 
 func (rf *Raft) heartBeatService() {
+	rf.advanceCommitIndex()
 	for i := 0; i < len(rf.peers); i++ {
 		if i != rf.me {
 			var reply AppendEntriesReply
@@ -401,6 +408,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.elecchan = make(chan bool)
 	rf.hbchan = make(chan bool)
 	rf.winner = make(chan bool)
+	rf.commitchan = make(chan bool)
 	rf.log = append(rf.log, LogEntry{0, 0})
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.initNextIndex()
@@ -432,6 +440,19 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				case <-time.After(time.Millisecond * (time.Duration(makeRandomNumber()))):
 				}
 			}
+		}
+	}()
+
+	go func() {
+		for {
+			<-rf.commitchan
+			rf.mu.Lock()
+			for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+				msg := ApplyMsg{Index: i, Command: rf.log[i].op}
+				applyCh <- msg
+				rf.lastApplied = i
+			}
+			rf.mu.Unlock()
 		}
 	}()
 	// initialize from state persisted before a crash

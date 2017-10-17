@@ -20,6 +20,7 @@ package raft
 import (
 	"labrpc"
 	"math/rand"
+	"sort"
 	"sync"
 	"time"
 )
@@ -49,6 +50,7 @@ type ApplyMsg struct {
 
 type LogEntry struct {
 	term int
+	op   interface{}
 }
 
 //
@@ -63,11 +65,14 @@ type Raft struct {
 	voteFor     int
 	state       int
 	voteCount   int
+	commitIndex int
+	lastApplied int
 	hbchan      chan bool
 	elecchan    chan bool
 	winner      chan bool
 	log         []LogEntry
 	nextIndex   []int
+	matchIndex  []int
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
@@ -81,13 +86,13 @@ func (rf *Raft) getLastLogTerm() int {
 func (rf *Raft) initNextIndex() {
 	for i := 0; i < len(rf.nextIndex); i++ {
 		rf.nextIndex[i] = len(rf.log)
+		rf.matchIndex[i] = 0
 	}
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
 	var term int
 	var isleader bool
 	term = rf.currentTerm
@@ -229,6 +234,8 @@ type AppendEntriesArgs struct {
 	LeaderId     int
 	PrevLogIndex int
 	PrevLogTerm  int
+	LeaderCommit int
+	Entries      []LogEntry
 }
 
 type AppendEntriesReply struct {
@@ -238,14 +245,35 @@ type AppendEntriesReply struct {
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.hbchan <- true
-	if args.Term < rf.currentTerm {
+	if args.Term < rf.currentTerm || len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].term != args.PrevLogTerm {
 		reply.Term = rf.currentTerm
 		reply.Success = false
+		return
 	} else {
 		rf.voteFor = -1
 		rf.state = STATE_FOLLOWER
 		rf.currentTerm = args.Term
 		reply.Success = true
+	}
+
+	for index, entry := range args.Entries {
+		if len(rf.log) > args.PrevLogIndex+1+index && rf.log[args.PrevLogIndex+1+index].term != entry.term {
+			rf.log = rf.log[:args.PrevLogIndex+1+index]
+		}
+
+		if len(rf.log) <= args.PrevLogIndex+1+index {
+			rf.log = append(rf.log, entry)
+		} else {
+			rf.log[args.PrevLogIndex+1+index] = entry
+		}
+	}
+
+	if args.LeaderCommit > rf.commitIndex {
+		if len(rf.log)-1 < args.LeaderCommit {
+			rf.commitIndex = len(rf.log) - 1
+		} else {
+			rf.commitIndex = args.LeaderCommit
+		}
 	}
 }
 
@@ -256,6 +284,13 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			rf.voteFor = -1
 			rf.state = STATE_FOLLOWER
 			rf.currentTerm = reply.Term
+		} else if reply.Success && len(args.Entries) > 0 {
+			rf.matchIndex[server] = rf.nextIndex[server]
+			rf.nextIndex[server]++
+		} else if len(args.Entries) > 0 {
+			rf.nextIndex[server]--
+			args.Entries = rf.log[rf.nextIndex[server]:]
+			rf.sendAppendEntries(server, args, reply)
 		}
 	}
 	return ok
@@ -275,12 +310,10 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
-	// Your code here (2B).
-
+	index := len(rf.log)
+	term, isLeader := rf.GetState()
+	rf.log = append(rf.log, LogEntry{rf.currentTerm, command})
+	go rf.replicationService()
 	return index, term, isLeader
 }
 
@@ -294,17 +327,38 @@ func (rf *Raft) Kill() {
 	// Your code here, if desired.
 }
 
-func (rf *Raft) heartBeatService() {
+//TODO: combine heartBeatService and replicationService
+//TODO: Sort matchIndex to advance primary's commitIndex
+func (rf *Raft) advanceCommitIndex() {
+	var tmp []int
+	copy(tmp, rf.matchIndex)
+	sort.Ints(tmp)
+	if rf.log[tmp[len(tmp)/2]] == rf.currentTerm {
+		rf.commitIndex = tmp[len(tmp)/2]
+	}
+}
+
+func (rf *Raft) replicationService() {
 	for i := 0; i < len(rf.peers); i++ {
-		if i != rf.me {
+		if i != rf.me && len(rf.log) > rf.nextIndex[i] {
 			var reply AppendEntriesReply
-			args := AppendEntriesArgs{rf.currentTerm, rf.me, rf.nextIndex[i] - 1, rf.log[rf.nextIndex[i]-1].term}
+			args := AppendEntriesArgs{rf.currentTerm, rf.me, rf.nextIndex[i] - 1, rf.log[rf.nextIndex[i]-1].term, rf.commitIndex, rf.log[rf.nextIndex[i]:]}
 			go rf.sendAppendEntries(i, &args, &reply)
 		}
 	}
 }
 
-//TODO: Make election time shorter
+func (rf *Raft) heartBeatService() {
+	for i := 0; i < len(rf.peers); i++ {
+		if i != rf.me {
+			var reply AppendEntriesReply
+			var entries []LogEntry
+			args := AppendEntriesArgs{rf.currentTerm, rf.me, rf.nextIndex[i] - 1, rf.log[rf.nextIndex[i]-1].term, rf.commitIndex, entries}
+			go rf.sendAppendEntries(i, &args, &reply)
+		}
+	}
+}
+
 func (rf *Raft) startElection() {
 	rf.voteCount = 1
 	for i := 0; i < len(rf.peers); i++ {
@@ -347,12 +401,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.elecchan = make(chan bool)
 	rf.hbchan = make(chan bool)
 	rf.winner = make(chan bool)
-	rf.log = append(rf.log, LogEntry{0})
+	rf.log = append(rf.log, LogEntry{0, 0})
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.initNextIndex()
-	rand.Seed(time.Now().UTC().UnixNano())
 	// Your initialization code here (2A, 2B, 2C).
-	//TODO: Reset votefor
 	go func() {
 		for {
 			switch rf.state {
@@ -376,6 +428,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				case <-rf.winner:
 					go rf.heartBeatService()
 					rf.state = STATE_LEADER
+					rf.initNextIndex()
 				case <-time.After(time.Millisecond * (time.Duration(makeRandomNumber()))):
 				}
 			}

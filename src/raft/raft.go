@@ -332,12 +332,13 @@ func (rf *Raft) Kill() {
 
 //TODO: combine heartBeatService and replicationService
 func (rf *Raft) advanceCommitIndex() {
-	var tmp []int
+	tmp := make([]int, len(rf.matchIndex))
 	copy(tmp, rf.matchIndex)
 	sort.Ints(tmp)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if rf.log[tmp[len(tmp)/2]].term == rf.currentTerm {
+	N := tmp[len(tmp)/2]
+	if rf.log[N].term == rf.currentTerm {
 		rf.commitIndex = tmp[len(tmp)/2]
 		rf.commitchan <- true
 	}
@@ -359,8 +360,7 @@ func (rf *Raft) heartBeatService() {
 	for i := 0; i < len(rf.peers); i++ {
 		if i != rf.me {
 			var reply AppendEntriesReply
-			var entries []LogEntry
-			args := AppendEntriesArgs{rf.currentTerm, rf.me, rf.nextIndex[i] - 1, rf.log[rf.nextIndex[i]-1].term, rf.commitIndex, entries}
+			args := AppendEntriesArgs{rf.currentTerm, rf.me, rf.nextIndex[i] - 1, rf.log[rf.nextIndex[i]-1].term, rf.commitIndex, []LogEntry{}}
 			go rf.sendAppendEntries(i, &args, &reply)
 		}
 	}
@@ -404,6 +404,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 0
 	rf.voteFor = -1
 	rf.voteCount = 0
+	rf.commitIndex = 0
+	rf.lastApplied = 0
 	rf.state = STATE_FOLLOWER
 	rf.elecchan = make(chan bool)
 	rf.hbchan = make(chan bool)
@@ -411,6 +413,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitchan = make(chan bool)
 	rf.log = append(rf.log, LogEntry{0, 0})
 	rf.nextIndex = make([]int, len(rf.peers))
+	rf.matchIndex = make([]int, len(rf.peers))
 	rf.initNextIndex()
 	// Your initialization code here (2A, 2B, 2C).
 	go func() {

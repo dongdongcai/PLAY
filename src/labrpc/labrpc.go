@@ -432,7 +432,7 @@ func (svc *Service) dispatch(methname string, req reqMsg) replyMsg {
 		ab := bytes.NewBuffer(req.args)
 		ad := gob.NewDecoder(ab)
 		ad.Decode(args.Interface())
-		log.Printf("%v", req.args)
+
 		// allocate space for the reply.
 		replyType := method.Type.In(2)
 		replyType = replyType.Elem()

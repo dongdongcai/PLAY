@@ -19,6 +19,7 @@ package raft
 
 import (
 	"labrpc"
+	"log"
 	"math/rand"
 	"sort"
 	"sync"
@@ -244,7 +245,7 @@ type AppendEntriesReply struct {
 	Success bool
 }
 
-func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.hbchan <- true
 	if args.Term < rf.currentTerm || len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].term != args.PrevLogTerm {
 		reply.Term = rf.currentTerm
@@ -280,7 +281,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 }
 
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	if ok {
 		if reply.Term > rf.currentTerm {
@@ -350,7 +351,7 @@ func (rf *Raft) replicationService() {
 		if i != rf.me && len(rf.log) > rf.nextIndex[i] {
 			var reply AppendEntriesReply
 			args := AppendEntriesArgs{rf.currentTerm, rf.me, rf.nextIndex[i] - 1, rf.log[rf.nextIndex[i]-1].term, rf.commitIndex, rf.log[rf.nextIndex[i]:]}
-			go rf.sendAppendEntries(i, &args, &reply)
+			go rf.sendAppendEntries(i, args, &reply)
 		}
 	}
 }
@@ -361,7 +362,7 @@ func (rf *Raft) heartBeatService() {
 		if i != rf.me {
 			var reply AppendEntriesReply
 			args := AppendEntriesArgs{rf.currentTerm, rf.me, rf.nextIndex[i] - 1, rf.log[rf.nextIndex[i]-1].term, rf.commitIndex, []LogEntry{}}
-			go rf.sendAppendEntries(i, &args, &reply)
+			go rf.sendAppendEntries(i, args, &reply)
 		}
 	}
 }
@@ -427,6 +428,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				case <-rf.hbchan:
 				case <-rf.elecchan:
 				case <-time.After(time.Millisecond * (time.Duration(makeRandomNumber()))):
+					log.Printf("%d time out", rf.me)
 					rf.state = STATE_CANDIDATE
 				}
 			case STATE_CANDIDATE:

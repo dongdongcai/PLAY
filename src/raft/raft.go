@@ -36,6 +36,8 @@ const (
 	HB_INTERVAL = time.Millisecond * 100
 )
 
+var test sync.Mutex
+
 //
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -222,7 +224,13 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
 			rf.voteCount++
+			test.Lock()
+			DPrintf("%d vote for %d", server, rf.me)
+			test.Unlock()
 			if rf.voteCount > len(rf.peers)/2 && rf.state == STATE_CANDIDATE {
+				test.Lock()
+				DPrintf("Now %d is leader", rf.me)
+				test.Unlock()
 				rf.winner <- true
 			}
 		}
@@ -281,6 +289,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	test.Lock()
+	DPrintf("%d send hb to %d, hb is %d", rf.me, server, args)
+	test.Unlock()
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	if ok {
 		if reply.Term > rf.currentTerm {
@@ -349,24 +360,30 @@ func (rf *Raft) replicationService() {
 	for i := 0; i < len(rf.peers); i++ {
 		if i != rf.me && len(rf.log) > rf.nextIndex[i] {
 			var reply AppendEntriesReply
-			args := AppendEntriesArgs{rf.currentTerm, rf.me, rf.nextIndex[i] - 1, rf.log[rf.nextIndex[i]-1].term, rf.commitIndex, rf.log[rf.nextIndex[i]:]}
+			args := AppendEntriesArgs{Term: rf.currentTerm, LeaderId: rf.me, PrevLogIndex: rf.nextIndex[i] - 1, PrevLogTerm: rf.log[rf.nextIndex[i]-1].term, LeaderCommit: rf.commitIndex, Entries: rf.log[rf.nextIndex[i]:]}
 			go rf.sendAppendEntries(i, &args, &reply)
 		}
 	}
 }
 
 func (rf *Raft) heartBeatService() {
+	test.Lock()
+	DPrintf("%d start heartbeat", rf.me)
+	test.Unlock()
 	rf.advanceCommitIndex()
 	for i := 0; i < len(rf.peers); i++ {
 		if i != rf.me {
 			var reply AppendEntriesReply
-			args := AppendEntriesArgs{rf.currentTerm, rf.me, rf.nextIndex[i] - 1, rf.log[rf.nextIndex[i]-1].term, rf.commitIndex, []LogEntry{}}
+			args := AppendEntriesArgs{Term: rf.currentTerm, LeaderId: rf.me, PrevLogIndex: rf.nextIndex[i] - 1, PrevLogTerm: rf.log[rf.nextIndex[i]-1].term, LeaderCommit: rf.commitIndex, Entries: []LogEntry{}}
 			go rf.sendAppendEntries(i, &args, &reply)
 		}
 	}
 }
 
 func (rf *Raft) startElection() {
+	test.Lock()
+	DPrintf("%d start election", rf.me)
+	test.Unlock()
 	rf.voteCount = 1
 	for i := 0; i < len(rf.peers); i++ {
 		if rf.state == STATE_CANDIDATE && i != rf.me {
@@ -425,6 +442,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			case STATE_FOLLOWER:
 				select {
 				case <-rf.hbchan:
+					test.Lock()
+					DPrintf("%d get hb", rf.me)
+					test.Unlock()
 				case <-rf.elecchan:
 				case <-time.After(time.Millisecond * (time.Duration(makeRandomNumber()))):
 					rf.state = STATE_CANDIDATE
@@ -436,6 +456,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				select {
 				case <-rf.hbchan:
 					rf.state = STATE_FOLLOWER
+					test.Lock()
+					DPrintf("%d get hb", rf.me)
+					test.Unlock()
 				case <-rf.winner:
 					go rf.heartBeatService()
 					rf.state = STATE_LEADER

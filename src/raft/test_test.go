@@ -110,6 +110,7 @@ func TestFailAgree2B(t *testing.T) {
 
 	// follower network disconnection
 	leader := cfg.checkOneLeader()
+	DPrintf("%d disconnected", (leader+1)%servers)
 	cfg.disconnect((leader + 1) % servers)
 
 	// agree despite one disconnected server?

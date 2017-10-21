@@ -214,6 +214,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	if ok {
 		if reply.Term > rf.currentTerm {
 			rf.currentTerm = reply.Term
@@ -221,10 +223,10 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 			rf.voteFor = -1
 			return ok
 		} else if reply.VoteGranted {
-			rf.mu.Lock()
-			defer rf.mu.Unlock()
 			rf.voteCount++
-			if rf.voteCount > len(rf.peers)/2 && rf.state == STATE_CANDIDATE {
+			if rf.state == STATE_CANDIDATE && rf.voteCount > len(rf.peers)/2 {
+				DPrintf("%d is now leader", rf.me)
+				rf.state = STATE_LEADER
 				rf.winner <- true
 			}
 		}
@@ -275,7 +277,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 	}
 
-	if len(args.Entries) > 0 && args.LeaderCommit > rf.commitIndex {
+	if args.LeaderCommit > rf.commitIndex {
 		if len(rf.log)-1 < args.LeaderCommit {
 			rf.commitIndex = len(rf.log) - 1
 		} else {
@@ -288,22 +290,23 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	if ok {
-
 		if reply.Term > rf.currentTerm {
 			rf.voteFor = -1
 			rf.state = STATE_FOLLOWER
 			rf.currentTerm = reply.Term
-		} else if reply.Success && len(args.Entries) > 0 {
+		} else if reply.Success {
 			rf.matchIndex[server] = len(rf.log) - 1
 			rf.nextIndex[server] = len(rf.log)
-		} else if len(args.Entries) > 0 {
+		} else if len(args.Entries) > 0 && rf.state == STATE_LEADER {
 			//DPrintf("leader%d retry to %d, term(%d, %d)", args.LeaderId, server, rf.currentTerm)
 			rf.nextIndex[server]--
 			args.PrevLogIndex = rf.nextIndex[server] - 1
 			args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
 			args.Entries = rf.log[rf.nextIndex[server]:]
-			rf.sendAppendEntries(server, args, reply)
+			go rf.sendAppendEntries(server, args, reply)
 		}
 	}
 	return ok
@@ -327,12 +330,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term, isLeader := rf.GetState()
 	if isLeader {
 		DPrintf("%d is leader, new log entry is %v", rf.me, command)
-		rf.mu.Lock()
 		rf.log = append(rf.log, LogEntry{rf.currentTerm, command})
 		DPrintf("leader log is update to %v", rf.log)
 		rf.matchIndex[rf.me] = len(rf.log) - 1
-		rf.mu.Unlock()
-		go rf.replicationService()
+		//go rf.replicationService()
 	}
 	return index, term, isLeader
 }
@@ -346,13 +347,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
 	rf.quit <- true
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(1000 * time.Millisecond)
 }
 
 //TODO: combine heartBeatService and replicationService
 func (rf *Raft) advanceCommitIndex() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	tmp := make([]int, len(rf.matchIndex))
 	copy(tmp, rf.matchIndex)
 	sort.Ints(tmp)
@@ -368,7 +367,7 @@ func (rf *Raft) advanceCommitIndex() {
 func (rf *Raft) replicationService() {
 	rf.advanceCommitIndex()
 	for i := 0; i < len(rf.peers); i++ {
-		if i != rf.me && len(rf.log) > rf.nextIndex[i] {
+		if i != rf.me {
 			var reply AppendEntriesReply
 			var args AppendEntriesArgs
 			args.Term = rf.currentTerm
@@ -416,7 +415,7 @@ func makeRandomNumber() int64 {
 	seed := time.Now().UnixNano()
 	source := rand.NewSource(seed)
 	generator := rand.New(source)
-	return generator.Int63n(300) + 200
+	return generator.Int63n(300) + 300
 }
 
 //IMPORTANT: If RPC request or response contains term T > currentTerm: set currentTerm = T, convert to follower
@@ -460,9 +459,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			case STATE_LEADER:
 				select {
 				case <-rf.quit:
+					DPrintf("leader %d stop signal received", rf.me)
 					return
 				default:
-					go rf.heartBeatService()
+					DPrintf("%d start hb", rf.me)
+					go rf.replicationService()
 					time.Sleep(HB_INTERVAL)
 				}
 			case STATE_FOLLOWER:
@@ -470,6 +471,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				case <-rf.hbchan:
 				case <-rf.elecchan:
 				case <-rf.quit:
+					DPrintf("follower %d stop signal received", rf.me)
 					return
 				case <-time.After(time.Millisecond * (time.Duration(makeRandomNumber()))):
 					DPrintf("%d timeout", rf.me)
@@ -481,13 +483,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				go rf.startElection()
 				select {
 				case <-rf.quit:
+					DPrintf("candidate %d stop signal received", rf.me)
 					return
 				case <-rf.hbchan:
 					rf.state = STATE_FOLLOWER
 				case <-rf.winner:
-					rf.state = STATE_LEADER
 					rf.initNextIndex()
-					go rf.heartBeatService()
+					//go rf.replicationService()
 				case <-time.After(time.Millisecond * (time.Duration(makeRandomNumber()))):
 				}
 			}

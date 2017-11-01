@@ -261,8 +261,9 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term    int
-	Success bool
+	Term          int
+	Success       bool
+	PossibleIndex int
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -274,6 +275,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		DPrintf("%d refuse leader %d, term(%d, %d), prevIndex(%d, %d)", rf.me, args.LeaderId, args.Term, rf.currentTerm, len(rf.log), args.PrevLogIndex)
 		reply.Term = rf.currentTerm
 		reply.Success = false
+		if args.Term >= rf.currentTerm {
+			if len(rf.log) <= args.PrevLogIndex {
+				reply.PossibleIndex = len(rf.log) - 1
+				return
+			}
+			tmp := args.PrevLogIndex - 1
+			for ; tmp > 0 && rf.log[tmp].Term != args.PrevLogTerm; tmp-- {
+			}
+			reply.PossibleIndex = tmp
+		}
 		return
 	} else {
 		rf.voteFor = -1
@@ -320,9 +331,9 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		} else if reply.Success {
 			rf.matchIndex[server] = len(rf.log) - 1
 			rf.nextIndex[server] = len(rf.log)
-		} else if len(args.Entries) > 0 && rf.state == STATE_LEADER {
+		} else if rf.state == STATE_LEADER {
 			//DPrintf("leader%d retry to %d, term(%d, %d)", args.LeaderId, server, rf.currentTerm)
-			rf.nextIndex[server]--
+			rf.nextIndex[server] = reply.PossibleIndex + 1
 			args.PrevLogIndex = rf.nextIndex[server] - 1
 			args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
 			args.Entries = rf.log[rf.nextIndex[server]:]

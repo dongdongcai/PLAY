@@ -261,15 +261,17 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term          int
-	Success       bool
-	PossibleIndex int
+	Term      int
+	Success   bool
+	NextIndex int
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.hbchan <- true
 	if len(args.Entries) > 0 {
 		DPrintf("%d receive from leader %d, data is %v", rf.me, args.LeaderId, args)
+	} else {
+		DPrintf("%d receive hb from %d", rf.me, args.LeaderId)
 	}
 	if args.Term < rf.currentTerm || len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		DPrintf("%d refuse leader %d, term(%d, %d), prevIndex(%d, %d)", rf.me, args.LeaderId, args.Term, rf.currentTerm, len(rf.log), args.PrevLogIndex)
@@ -277,13 +279,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		if args.Term >= rf.currentTerm {
 			if len(rf.log) <= args.PrevLogIndex {
-				reply.PossibleIndex = len(rf.log) - 1
+				reply.NextIndex = len(rf.log)
 				return
 			}
 			tmp := args.PrevLogIndex - 1
 			for ; tmp > 0 && rf.log[tmp].Term != args.PrevLogTerm; tmp-- {
 			}
-			reply.PossibleIndex = tmp
+			reply.NextIndex = tmp + 1
 		}
 		return
 	} else {
@@ -291,6 +293,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.state = STATE_FOLLOWER
 		rf.currentTerm = args.Term
 		reply.Success = true
+		reply.NextIndex = args.PrevLogIndex + 1
 		rf.persist()
 	}
 
@@ -305,6 +308,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.log[args.PrevLogIndex+1+index] = entry
 		}
 		rf.persist()
+		reply.NextIndex++
 	}
 
 	if args.LeaderCommit > rf.commitIndex {
@@ -329,11 +333,11 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			rf.currentTerm = reply.Term
 			rf.persist()
 		} else if reply.Success {
-			rf.matchIndex[server] = len(rf.log) - 1
-			rf.nextIndex[server] = len(rf.log)
+			rf.matchIndex[server] = reply.NextIndex - 1
+			rf.nextIndex[server] = reply.NextIndex
 		} else if rf.state == STATE_LEADER {
 			//DPrintf("leader%d retry to %d, term(%d, %d)", args.LeaderId, server, rf.currentTerm)
-			rf.nextIndex[server] = reply.PossibleIndex + 1
+			rf.nextIndex[server] = reply.NextIndex
 			args.PrevLogIndex = rf.nextIndex[server] - 1
 			args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
 			args.Entries = rf.log[rf.nextIndex[server]:]
@@ -357,6 +361,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	index := len(rf.log)
 	term, isLeader := rf.GetState()
 	if isLeader {
@@ -379,11 +385,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
 	rf.quit <- true
-	time.Sleep(1000 * time.Millisecond)
 }
 
 //TODO: combine heartBeatService and replicationService
 func (rf *Raft) advanceCommitIndex() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	tmp := make([]int, len(rf.matchIndex))
 	copy(tmp, rf.matchIndex)
 	sort.Ints(tmp)

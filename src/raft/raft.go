@@ -385,6 +385,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 //
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
+	Debug = 0
 	rf.quit <- true
 }
 

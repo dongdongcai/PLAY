@@ -10,7 +10,7 @@ import (
 	"6.824/src/raft"
 )
 
-const Debug = 0
+var Debug = 0
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -40,11 +40,17 @@ type RaftKV struct {
 }
 
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
+	_, _, isLeader := kv.rf.Start(Op{Opname: "Get", Key: args.Key, Value: ""})
+	if !isLeader {
+		reply.WrongLeader = true
+	}
 }
 
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	_, _, isLeader := kv.rf.Start(Op{Opname: args.Op, Key: args.Key, Value: args.Value})
+	if !isLeader {
+		reply.WrongLeader = true
+	}
 }
 
 //

@@ -20,11 +20,12 @@ package raft
 import (
 	"bytes"
 	"encoding/gob"
-	"labrpc"
 	"math/rand"
 	"sort"
 	"sync"
 	"time"
+
+	"6.824/src/labrpc"
 )
 
 // import "bytes"

@@ -4,8 +4,9 @@ import (
 	"encoding/gob"
 	"labrpc"
 	"log"
-	"raft"
 	"sync"
+
+	"6.824/src/raft"
 )
 
 const Debug = 0
@@ -17,11 +18,13 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Opname string
+	Key    string
+	Value  string
 }
 
 type RaftKV struct {
@@ -34,7 +37,6 @@ type RaftKV struct {
 
 	// Your definitions here.
 }
-
 
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.

@@ -2,9 +2,10 @@ package raftkv
 
 import (
 	"encoding/gob"
-	"labrpc"
 	"log"
 	"sync"
+
+	"6.824/src/labrpc"
 
 	"6.824/src/raft"
 )

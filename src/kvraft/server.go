@@ -36,13 +36,16 @@ type RaftKV struct {
 
 	maxraftstate int // snapshot if log grows this big
 
+	table map[string]string
 	// Your definitions here.
 }
 
+//if is leader, return immediately, otherwise block until committed
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	_, _, isLeader := kv.rf.Start(Op{Opname: "Get", Key: args.Key, Value: ""})
 	if !isLeader {
 		reply.WrongLeader = true
+		return
 	}
 }
 
@@ -50,6 +53,7 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	_, _, isLeader := kv.rf.Start(Op{Opname: args.Op, Key: args.Key, Value: args.Value})
 	if !isLeader {
 		reply.WrongLeader = true
+		return
 	}
 }
 
@@ -90,7 +94,23 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.table = make(map[string]string)
 
+	go func() {
+		for {
+			msg := <-kv.applyCh
+			switch op := msg.Command.(Op); op.Opname {
+			case "Get":
+				kv.table[op.Key] = op.Value
+			case "Put":
+				kv.table[op.Key] = op.Value
+			case "Append":
+				kv.table[op.Key] = op.Value
+			default:
+				kv.table[op.Key] = op.Value
+			}
+		}
+	}()
 	// You may need initialization code here.
 
 	return kv

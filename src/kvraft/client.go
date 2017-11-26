@@ -46,6 +46,9 @@ func (ck *Clerk) Get(key string) string {
 			}
 		}
 	}
+	if reply.Err == ErrNoKey {
+		return ""
+	}
 	return reply.Value
 }
 

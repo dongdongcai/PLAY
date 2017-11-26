@@ -36,25 +36,56 @@ type RaftKV struct {
 
 	maxraftstate int // snapshot if log grows this big
 
-	table map[string]string
+	table     map[string]string
+	chanTable map[int]chan bool
 	// Your definitions here.
 }
 
-//if is leader, return immediately, otherwise block until committed
+//if is leader, return immediately, otherwise block until committed, may need a goroutine
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
-	_, _, isLeader := kv.rf.Start(Op{Opname: "Get", Key: args.Key, Value: ""})
+	kv.mu.Lock()
+	index, _, isLeader := kv.rf.Start(Op{Opname: "Get", Key: args.Key, Value: ""})
+	kv.mu.Unlock()
 	if !isLeader {
 		reply.WrongLeader = true
 		return
 	}
+	kv.chanTable[index] = make(chan bool)
+	if res := <-kv.chanTable[index]; res {
+		reply.WrongLeader = false
+		kv.mu.Lock()
+		v, exist := kv.table[args.Key]
+		kv.mu.Unlock()
+		if exist {
+			reply.Value = v
+			reply.Err = OK
+		} else {
+			reply.Err = ErrNoKey
+		}
+	} else {
+		reply.WrongLeader = true
+	}
+	close(kv.chanTable[index])
+	delete(kv.chanTable, index)
 }
 
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	_, _, isLeader := kv.rf.Start(Op{Opname: args.Op, Key: args.Key, Value: args.Value})
+	kv.mu.Lock()
+	index, _, isLeader := kv.rf.Start(Op{Opname: args.Op, Key: args.Key, Value: args.Value})
+	kv.mu.Unlock()
 	if !isLeader {
 		reply.WrongLeader = true
 		return
 	}
+	kv.chanTable[index] = make(chan bool)
+	if res := <-kv.chanTable[index]; res {
+		reply.WrongLeader = false
+		reply.Err = OK
+	} else {
+		reply.WrongLeader = true
+	}
+	close(kv.chanTable[index])
+	delete(kv.chanTable, index)
 }
 
 //
@@ -95,20 +126,26 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	kv.table = make(map[string]string)
+	kv.chanTable = make(map[int]chan bool)
 
+	//TODO: concern that write before read
 	go func() {
 		for {
 			msg := <-kv.applyCh
+			kv.mu.Lock()
 			switch op := msg.Command.(Op); op.Opname {
 			case "Get":
-				kv.table[op.Key] = op.Value
+				kv.chanTable[msg.Index] <- true
 			case "Put":
 				kv.table[op.Key] = op.Value
+				kv.chanTable[msg.Index] <- true
 			case "Append":
-				kv.table[op.Key] = op.Value
+				kv.table[op.Key] = kv.table[op.Key] + op.Value
+				kv.chanTable[msg.Index] <- true
 			default:
-				kv.table[op.Key] = op.Value
+				log.Fatal("This is impossible!")
 			}
+			kv.mu.Unlock()
 		}
 	}()
 	// You may need initialization code here.

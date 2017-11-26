@@ -5,7 +5,9 @@ import "crypto/rand"
 import "math/big"
 
 type Clerk struct {
-	servers []*labrpc.ClientEnd
+	servers  []*labrpc.ClientEnd
+	id       int64
+	opnumber int
 	// You will have to modify this struct.
 }
 
@@ -19,6 +21,8 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
+	ck.id = nrand()
+	ck.opnumber = 0
 	// You'll have to add code here.
 	return ck
 }
@@ -36,7 +40,8 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
-	request := GetArgs{Key: key}
+	ck.opnumber += 1
+	request := GetArgs{Key: key, Id: ck.id, OpNum: ck.opnumber}
 	var reply GetReply
 	for reply.WrongLeader {
 		for i := 0; i < len(ck.servers); i++ {
@@ -63,7 +68,8 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	request := PutAppendArgs{Key: key, Value: value, Op: op}
+	ck.opnumber += 1
+	request := PutAppendArgs{Key: key, Value: value, Op: op, Id: ck.id, OpNum: ck.opnumber}
 	var reply PutAppendReply
 	for reply.WrongLeader {
 		for i := 0; i < len(ck.servers); i++ {

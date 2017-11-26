@@ -37,7 +37,7 @@ type RaftKV struct {
 	maxraftstate int // snapshot if log grows this big
 
 	table     map[string]string
-	chanTable map[int]chan bool
+	chanTable map[int]chan Op
 	// Your definitions here.
 }
 
@@ -50,8 +50,10 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 		reply.WrongLeader = true
 		return
 	}
-	kv.chanTable[index] = make(chan bool)
-	if res := <-kv.chanTable[index]; res {
+	kv.chanTable[index] = make(chan Op)
+	if res := <-kv.chanTable[index]; res.Opname == "Get" && res.Key == args.Key {
+		kv.mu.Lock()
+		kv.mu.Unlock()
 		reply.WrongLeader = false
 		kv.mu.Lock()
 		v, exist := kv.table[args.Key]
@@ -77,8 +79,18 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		reply.WrongLeader = true
 		return
 	}
-	kv.chanTable[index] = make(chan bool)
-	if res := <-kv.chanTable[index]; res {
+	kv.chanTable[index] = make(chan Op)
+	if res := <-kv.chanTable[index]; res.Opname == args.Op && res.Key == args.Key && res.Value == args.Value {
+		kv.mu.Lock()
+		defer kv.mu.Unlock()
+		switch args.Op {
+		case "Append":
+			kv.table[args.Key] = kv.table[args.Key] + args.Value
+		case "Put":
+			kv.table[args.Key] = args.Value
+		default:
+			log.Fatal("This is impossible!")
+		}
 		reply.WrongLeader = false
 		reply.Err = OK
 	} else {
@@ -126,26 +138,13 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	kv.table = make(map[string]string)
-	kv.chanTable = make(map[int]chan bool)
+	kv.chanTable = make(map[int]chan Op)
 
 	//TODO: concern that write before read
 	go func() {
 		for {
 			msg := <-kv.applyCh
-			kv.mu.Lock()
-			switch op := msg.Command.(Op); op.Opname {
-			case "Get":
-				kv.chanTable[msg.Index] <- true
-			case "Put":
-				kv.table[op.Key] = op.Value
-				kv.chanTable[msg.Index] <- true
-			case "Append":
-				kv.table[op.Key] = kv.table[op.Key] + op.Value
-				kv.chanTable[msg.Index] <- true
-			default:
-				log.Fatal("This is impossible!")
-			}
-			kv.mu.Unlock()
+			kv.chanTable[msg.Index] <- msg.Command.(Op)
 		}
 	}()
 	// You may need initialization code here.

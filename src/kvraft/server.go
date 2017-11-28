@@ -10,7 +10,7 @@ import (
 	"6.824/src/raft"
 )
 
-var Debug = 0
+var Debug = 1
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -51,7 +51,9 @@ func (kv *RaftKV) checkDup(id int64, opnum int) bool {
 
 //if is leader, return immediately, otherwise block until committed, may need a goroutine
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
+	DPrintf("Server %d:Getting %s", kv.me, args.Key)
 	kv.mu.Lock()
+	DPrintf("Server %d lock:Getting %s", kv.me, args.Key)
 	index, _, isLeader := kv.rf.Start(Op{Opname: "Get", Key: args.Key, Value: ""})
 	kv.mu.Unlock()
 	if !isLeader {
@@ -60,12 +62,11 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	}
 	kv.chanTable[index] = make(chan Op)
 	if res := <-kv.chanTable[index]; res.Opname == "Get" && res.Key == args.Key {
+		DPrintf("Server %d final:Getting %s", kv.me, args.Key)
 		kv.mu.Lock()
-		kv.mu.Unlock()
+		defer kv.mu.Unlock()
 		reply.WrongLeader = false
-		kv.mu.Lock()
 		v, exist := kv.table[args.Key]
-		kv.mu.Unlock()
 		if exist {
 			reply.Value = v
 			reply.Err = OK
@@ -81,7 +82,9 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 }
 
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
+	DPrintf("Server %d:%s %s to %s", kv.me, args.Op, args.Value, args.Key)
 	kv.mu.Lock()
+	DPrintf("Server %d lock:%s %s to %s", kv.me, args.Op, args.Value, args.Key)
 	index, _, isLeader := kv.rf.Start(Op{Opname: args.Op, Key: args.Key, Value: args.Value})
 	kv.mu.Unlock()
 	if !isLeader {
@@ -95,8 +98,10 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		if !kv.checkDup(args.ClientID, args.OpNum) {
 			switch args.Op {
 			case "Append":
+				DPrintf("Server %d final:Appending %s to %s", kv.me, args.Value, args.Key)
 				kv.table[args.Key] = kv.table[args.Key] + args.Value
 			case "Put":
+				DPrintf("Server %d final:Putting %s to %s", kv.me, args.Value, args.Key)
 				kv.table[args.Key] = args.Value
 			default:
 				log.Fatal("This is impossible!")
@@ -151,8 +156,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	kv.table = make(map[string]string)
 	kv.chanTable = make(map[int]chan Op)
+	kv.clientRequest = make(map[int64]int)
 
-	//TODO: concern that write before read
 	go func() {
 		for {
 			msg := <-kv.applyCh

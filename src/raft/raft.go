@@ -362,8 +362,10 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	DPrintf("%d start attempting lock", rf.me)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	DPrintf("%d start lock", rf.me)
 	index := len(rf.log)
 	term, isLeader := rf.GetState()
 	if isLeader {
@@ -530,11 +532,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			select {
 			case <-rf.commitchan:
 				rf.mu.Lock()
+				DPrintf("%d applying", rf.me)
 				for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 					msg := ApplyMsg{Index: i, Command: rf.log[i].Op}
 					applyCh <- msg
 					rf.lastApplied = i
 				}
+				DPrintf("%d apply done", rf.me)
 				rf.mu.Unlock()
 			case <-rf.quit:
 				return

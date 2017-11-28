@@ -41,7 +41,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 //
 func (ck *Clerk) Get(key string) string {
 	ck.opnumber += 1
-	request := GetArgs{Key: key, Id: ck.id, OpNum: ck.opnumber}
+	request := GetArgs{Key: key, ClientID: ck.id, OpNum: ck.opnumber}
 	var reply GetReply
 	for reply.WrongLeader {
 		for i := 0; i < len(ck.servers); i++ {
@@ -69,7 +69,7 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	ck.opnumber += 1
-	request := PutAppendArgs{Key: key, Value: value, Op: op, Id: ck.id, OpNum: ck.opnumber}
+	request := PutAppendArgs{Key: key, Value: value, Op: op, ClientID: ck.id, OpNum: ck.opnumber}
 	var reply PutAppendReply
 	for reply.WrongLeader {
 		for i := 0; i < len(ck.servers); i++ {

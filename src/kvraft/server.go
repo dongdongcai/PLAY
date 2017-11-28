@@ -36,9 +36,17 @@ type RaftKV struct {
 
 	maxraftstate int // snapshot if log grows this big
 
-	table     map[string]string
-	chanTable map[int]chan Op
+	table         map[string]string
+	chanTable     map[int]chan Op
+	clientRequest map[int64]int
 	// Your definitions here.
+}
+
+func (kv *RaftKV) checkDup(id int64, opnum int) bool {
+	if val, ok := kv.clientRequest[id]; ok {
+		return (val >= opnum)
+	}
+	return false
 }
 
 //if is leader, return immediately, otherwise block until committed, may need a goroutine
@@ -67,6 +75,7 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	} else {
 		reply.WrongLeader = true
 	}
+	kv.clientRequest[args.ClientID] = args.OpNum
 	close(kv.chanTable[index])
 	delete(kv.chanTable, index)
 }
@@ -83,13 +92,16 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	if res := <-kv.chanTable[index]; res.Opname == args.Op && res.Key == args.Key && res.Value == args.Value {
 		kv.mu.Lock()
 		defer kv.mu.Unlock()
-		switch args.Op {
-		case "Append":
-			kv.table[args.Key] = kv.table[args.Key] + args.Value
-		case "Put":
-			kv.table[args.Key] = args.Value
-		default:
-			log.Fatal("This is impossible!")
+		if !kv.checkDup(args.ClientID, args.OpNum) {
+			switch args.Op {
+			case "Append":
+				kv.table[args.Key] = kv.table[args.Key] + args.Value
+			case "Put":
+				kv.table[args.Key] = args.Value
+			default:
+				log.Fatal("This is impossible!")
+			}
+			kv.clientRequest[args.ClientID] = args.OpNum
 		}
 		reply.WrongLeader = false
 		reply.Err = OK

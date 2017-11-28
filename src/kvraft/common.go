@@ -9,11 +9,11 @@ type Err string
 
 // Put or Append
 type PutAppendArgs struct {
-	Key   string
-	Value string
-	Op    string // "Put" or "Append"
-	Id    int64
-	OpNum int
+	Key      string
+	Value    string
+	Op       string // "Put" or "Append"
+	ClientID int64
+	OpNum    int
 }
 
 type PutAppendReply struct {
@@ -22,9 +22,9 @@ type PutAppendReply struct {
 }
 
 type GetArgs struct {
-	Key   string
-	Id    int64
-	OpNum int
+	Key      string
+	ClientID int64
+	OpNum    int
 	// You'll have to add definitions here.
 }
 

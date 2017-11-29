@@ -96,16 +96,7 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		kv.mu.Lock()
 		defer kv.mu.Unlock()
 		if !kv.checkDup(args.ClientID, args.OpNum) {
-			switch args.Op {
-			case "Append":
-				DPrintf("Server %d final:Appending %s to %s", kv.me, args.Value, args.Key)
-				kv.table[args.Key] = kv.table[args.Key] + args.Value
-			case "Put":
-				DPrintf("Server %d final:Putting %s to %s", kv.me, args.Value, args.Key)
-				kv.table[args.Key] = args.Value
-			default:
-				log.Fatal("This is impossible!")
-			}
+			kv.apply(res)
 			kv.clientRequest[args.ClientID] = args.OpNum
 		}
 		reply.WrongLeader = false
@@ -126,6 +117,19 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 func (kv *RaftKV) Kill() {
 	kv.rf.Kill()
 	// Your code here, if desired.
+}
+
+func (kv *RaftKV) apply(op Op) {
+	switch op.Opname {
+	case "Append":
+		DPrintf("Server %d final:Appending %s to %s", kv.me, op.Value, op.Key)
+		kv.table[op.Key] = kv.table[op.Key] + op.Value
+	case "Put":
+		DPrintf("Server %d final:Putting %s to %s", kv.me, op.Value, op.Key)
+		kv.table[op.Key] = op.Value
+	default:
+		//log.Fatal("This is impossible!")
+	}
 }
 
 //
@@ -161,7 +165,13 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	go func() {
 		for {
 			msg := <-kv.applyCh
-			kv.chanTable[msg.Index] <- msg.Command.(Op)
+			//TODO: No one is receiving this except leader
+			//TODO: Add request timeout
+			if c, ok := kv.chanTable[msg.Index]; ok {
+				c <- msg.Command.(Op)
+			} else {
+				kv.apply(msg.Command.(Op))
+			}
 		}
 	}()
 	// You may need initialization code here.

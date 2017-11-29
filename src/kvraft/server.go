@@ -23,9 +23,11 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Opname string
-	Key    string
-	Value  string
+	Opname   string
+	Key      string
+	Value    string
+	ClientID int64
+	OpNum    int
 }
 
 type RaftKV struct {
@@ -52,21 +54,23 @@ func (kv *RaftKV) checkDup(id int64, opnum int) bool {
 //if is leader, return immediately, otherwise block until committed, may need a goroutine
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	DPrintf("Server %d:Getting %s", kv.me, args.Key)
-	kv.mu.Lock()
+	//kv.mu.Lock()
 	DPrintf("Server %d lock:Getting %s", kv.me, args.Key)
-	index, _, isLeader := kv.rf.Start(Op{Opname: "Get", Key: args.Key, Value: ""})
-	kv.mu.Unlock()
+	index, _, isLeader := kv.rf.Start(Op{Opname: "Get", Key: args.Key, Value: "", ClientID: args.ClientID, OpNum: args.OpNum})
+	//kv.mu.Unlock()
 	if !isLeader {
 		reply.WrongLeader = true
 		return
 	}
-	kv.chanTable[index] = make(chan Op)
+	kv.mu.Lock()
+	kv.chanTable[index] = make(chan Op, 100)
+	kv.mu.Unlock()
 	if res := <-kv.chanTable[index]; res.Opname == "Get" && res.Key == args.Key {
 		DPrintf("Server %d final:Getting %s", kv.me, args.Key)
-		kv.mu.Lock()
-		defer kv.mu.Unlock()
 		reply.WrongLeader = false
+		kv.mu.Lock()
 		v, exist := kv.table[args.Key]
+		kv.mu.Unlock()
 		if exist {
 			reply.Value = v
 			reply.Err = OK
@@ -76,36 +80,27 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	} else {
 		reply.WrongLeader = true
 	}
-	kv.clientRequest[args.ClientID] = args.OpNum
-	close(kv.chanTable[index])
-	delete(kv.chanTable, index)
 }
 
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	DPrintf("Server %d:%s %s to %s", kv.me, args.Op, args.Value, args.Key)
-	kv.mu.Lock()
+	//kv.mu.Lock()
 	DPrintf("Server %d lock:%s %s to %s", kv.me, args.Op, args.Value, args.Key)
-	index, _, isLeader := kv.rf.Start(Op{Opname: args.Op, Key: args.Key, Value: args.Value})
-	kv.mu.Unlock()
+	index, _, isLeader := kv.rf.Start(Op{Opname: args.Op, Key: args.Key, Value: args.Value, ClientID: args.ClientID, OpNum: args.OpNum})
+	//kv.mu.Unlock()
 	if !isLeader {
 		reply.WrongLeader = true
 		return
 	}
-	kv.chanTable[index] = make(chan Op)
+	kv.mu.Lock()
+	kv.chanTable[index] = make(chan Op, 100)
+	kv.mu.Unlock()
 	if res := <-kv.chanTable[index]; res.Opname == args.Op && res.Key == args.Key && res.Value == args.Value {
-		kv.mu.Lock()
-		defer kv.mu.Unlock()
-		if !kv.checkDup(args.ClientID, args.OpNum) {
-			kv.apply(res)
-			kv.clientRequest[args.ClientID] = args.OpNum
-		}
 		reply.WrongLeader = false
 		reply.Err = OK
 	} else {
 		reply.WrongLeader = true
 	}
-	close(kv.chanTable[index])
-	delete(kv.chanTable, index)
 }
 
 //
@@ -120,15 +115,18 @@ func (kv *RaftKV) Kill() {
 }
 
 func (kv *RaftKV) apply(op Op) {
-	switch op.Opname {
-	case "Append":
-		DPrintf("Server %d final:Appending %s to %s", kv.me, op.Value, op.Key)
-		kv.table[op.Key] = kv.table[op.Key] + op.Value
-	case "Put":
-		DPrintf("Server %d final:Putting %s to %s", kv.me, op.Value, op.Key)
-		kv.table[op.Key] = op.Value
-	default:
-		//log.Fatal("This is impossible!")
+	if !kv.checkDup(op.ClientID, op.OpNum) {
+		switch op.Opname {
+		case "Append":
+			DPrintf("Server %d final:Appending %s to %s", kv.me, op.Value, op.Key)
+			kv.table[op.Key] = kv.table[op.Key] + op.Value
+		case "Put":
+			DPrintf("Server %d final:Putting %s to %s", kv.me, op.Value, op.Key)
+			kv.table[op.Key] = op.Value
+		default:
+			//log.Fatal("This is impossible!")
+		}
+		kv.clientRequest[op.ClientID] = op.OpNum
 	}
 }
 
@@ -167,11 +165,14 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 			msg := <-kv.applyCh
 			//TODO: No one is receiving this except leader
 			//TODO: Add request timeout
+			kv.mu.Lock()
+			tmp := msg.Command.(Op)
+			DPrintf("%d receive msg back from RAFT, msg op is %s, msg key is %s, msg value is %s, locked", kv.me, tmp.Opname, tmp.Key, tmp.Value)
+			kv.apply(tmp)
 			if c, ok := kv.chanTable[msg.Index]; ok {
-				c <- msg.Command.(Op)
-			} else {
-				kv.apply(msg.Command.(Op))
+				c <- tmp
 			}
+			kv.mu.Unlock()
 		}
 	}()
 	// You may need initialization code here.

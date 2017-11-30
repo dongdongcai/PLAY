@@ -426,7 +426,9 @@ func (rf *Raft) replicationService() {
 
 func (rf *Raft) startElection() {
 	DPrintf("%d start leader election", rf.me)
+	rf.mu.Lock()
 	rf.voteCount = 1
+	rf.mu.Unlock()
 	for i := 0; i < len(rf.peers); i++ {
 		if rf.state == STATE_CANDIDATE && i != rf.me {
 			var reply RequestVoteReply

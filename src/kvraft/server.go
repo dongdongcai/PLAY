@@ -4,6 +4,7 @@ import (
 	"encoding/gob"
 	"log"
 	"sync"
+	"time"
 
 	"6.824/src/labrpc"
 
@@ -65,19 +66,24 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	kv.mu.Lock()
 	kv.chanTable[index] = make(chan Op, 100)
 	kv.mu.Unlock()
-	if res := <-kv.chanTable[index]; res.Opname == "Get" && res.Key == args.Key {
-		DPrintf("Server %d final:Getting %s", kv.me, args.Key)
-		reply.WrongLeader = false
-		kv.mu.Lock()
-		v, exist := kv.table[args.Key]
-		kv.mu.Unlock()
-		if exist {
-			reply.Value = v
-			reply.Err = OK
+	select {
+	case res := <-kv.chanTable[index]:
+		if res.Opname == "Get" && res.Key == args.Key {
+			DPrintf("Server %d final:Getting %s", kv.me, args.Key)
+			reply.WrongLeader = false
+			kv.mu.Lock()
+			v, exist := kv.table[args.Key]
+			kv.mu.Unlock()
+			if exist {
+				reply.Value = v
+				reply.Err = OK
+			} else {
+				reply.Err = ErrNoKey
+			}
 		} else {
-			reply.Err = ErrNoKey
+			reply.WrongLeader = true
 		}
-	} else {
+	case <-time.After(1000 * time.Millisecond):
 		reply.WrongLeader = true
 	}
 }
@@ -95,10 +101,15 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
 	kv.chanTable[index] = make(chan Op, 100)
 	kv.mu.Unlock()
-	if res := <-kv.chanTable[index]; res.Opname == args.Op && res.Key == args.Key && res.Value == args.Value {
-		reply.WrongLeader = false
-		reply.Err = OK
-	} else {
+	select {
+	case res := <-kv.chanTable[index]:
+		if res.Opname == args.Op && res.Key == args.Key && res.Value == args.Value {
+			reply.WrongLeader = false
+			reply.Err = OK
+		} else {
+			reply.WrongLeader = true
+		}
+	case <-time.After(1000 * time.Millisecond):
 		reply.WrongLeader = true
 	}
 }

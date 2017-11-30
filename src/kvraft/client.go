@@ -1,12 +1,14 @@
 package raftkv
 
-import "labrpc"
+import "6.824/src/labrpc"
 import "crypto/rand"
 import "math/big"
 
-
 type Clerk struct {
-	servers []*labrpc.ClientEnd
+	servers  []*labrpc.ClientEnd
+	id       int64
+	opnumber int
+	leader   int
 	// You will have to modify this struct.
 }
 
@@ -20,6 +22,9 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
+	ck.id = nrand()
+	ck.opnumber = 0
+	ck.leader = 0
 	// You'll have to add code here.
 	return ck
 }
@@ -37,9 +42,27 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
-
-	// You will have to modify this function.
-	return ""
+	ck.opnumber += 1
+	request := GetArgs{Key: key, ClientID: ck.id, OpNum: ck.opnumber}
+	var reply GetReply
+	reply.WrongLeader = true
+	for reply.Err == "" {
+		for i := 0; i < len(ck.servers); {
+			DPrintf("client:Getting %s via server %d", key, (ck.leader+i)%len(ck.servers))
+			ok := ck.servers[(ck.leader+i)%len(ck.servers)].Call("RaftKV.Get", &request, &reply)
+			if ok && reply.Err != "" {
+				ck.leader = (ck.leader + i) % len(ck.servers)
+				break
+			}
+			if reply.WrongLeader {
+				i++
+			}
+		}
+	}
+	if reply.Err == ErrNoKey {
+		return ""
+	}
+	return reply.Value
 }
 
 //
@@ -53,7 +76,23 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	// You will have to modify this function.
+	ck.opnumber += 1
+	request := PutAppendArgs{Key: key, Value: value, Op: op, ClientID: ck.id, OpNum: ck.opnumber}
+	var reply PutAppendReply
+	reply.WrongLeader = true
+	for reply.Err == "" {
+		for i := 0; i < len(ck.servers); {
+			DPrintf("client:%s %s to %s via server %d", op, value, key, (ck.leader+i)%len(ck.servers))
+			ok := ck.servers[(ck.leader+i)%len(ck.servers)].Call("RaftKV.PutAppend", &request, &reply)
+			if ok && reply.Err == OK {
+				ck.leader = (ck.leader + i) % len(ck.servers)
+				break
+			}
+			if reply.WrongLeader {
+				i++
+			}
+		}
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {

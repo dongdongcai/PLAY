@@ -20,11 +20,12 @@ package raft
 import (
 	"bytes"
 	"encoding/gob"
-	"labrpc"
 	"math/rand"
 	"sort"
 	"sync"
 	"time"
+
+	"6.824/src/labrpc"
 )
 
 // import "bytes"
@@ -361,8 +362,10 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	DPrintf("%d start attempting lock", rf.me)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	DPrintf("%d start lock", rf.me)
 	index := len(rf.log)
 	term, isLeader := rf.GetState()
 	if isLeader {
@@ -384,6 +387,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 //
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
+	Debug = 0
 	rf.quit <- true
 }
 
@@ -422,7 +426,9 @@ func (rf *Raft) replicationService() {
 
 func (rf *Raft) startElection() {
 	DPrintf("%d start leader election", rf.me)
+	rf.mu.Lock() //need lock here for caching thing, this value must be flushed to memory.
 	rf.voteCount = 1
+	rf.mu.Unlock()
 	for i := 0; i < len(rf.peers); i++ {
 		if rf.state == STATE_CANDIDATE && i != rf.me {
 			var reply RequestVoteReply
@@ -528,11 +534,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			select {
 			case <-rf.commitchan:
 				rf.mu.Lock()
+				DPrintf("%d applying", rf.me)
 				for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 					msg := ApplyMsg{Index: i, Command: rf.log[i].Op}
 					applyCh <- msg
 					rf.lastApplied = i
 				}
+				DPrintf("%d apply done", rf.me)
 				rf.mu.Unlock()
 			case <-rf.quit:
 				return

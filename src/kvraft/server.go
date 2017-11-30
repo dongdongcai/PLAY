@@ -2,13 +2,16 @@ package raftkv
 
 import (
 	"encoding/gob"
-	"labrpc"
 	"log"
-	"raft"
 	"sync"
+	"time"
+
+	"6.824/src/labrpc"
+
+	"6.824/src/raft"
 )
 
-const Debug = 0
+var Debug = 0
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -17,11 +20,15 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Opname   string
+	Key      string
+	Value    string
+	ClientID int64
+	OpNum    int
 }
 
 type RaftKV struct {
@@ -32,16 +39,79 @@ type RaftKV struct {
 
 	maxraftstate int // snapshot if log grows this big
 
+	table         map[string]string
+	chanTable     map[int]chan Op
+	clientRequest map[int64]int
 	// Your definitions here.
 }
 
+func (kv *RaftKV) checkDup(id int64, opnum int) bool {
+	if val, ok := kv.clientRequest[id]; ok {
+		return (val >= opnum)
+	}
+	return false
+}
 
+//if is leader, return immediately, otherwise block until committed, may need a goroutine
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
+	DPrintf("Server %d:Getting %s", kv.me, args.Key)
+	//kv.mu.Lock()
+	DPrintf("Server %d lock:Getting %s", kv.me, args.Key)
+	index, _, isLeader := kv.rf.Start(Op{Opname: "Get", Key: args.Key, Value: "", ClientID: args.ClientID, OpNum: args.OpNum})
+	//kv.mu.Unlock()
+	if !isLeader {
+		reply.WrongLeader = true
+		return
+	}
+	kv.mu.Lock()
+	kv.chanTable[index] = make(chan Op, 100)
+	kv.mu.Unlock()
+	select {
+	case res := <-kv.chanTable[index]:
+		if res.Opname == "Get" && res.Key == args.Key {
+			DPrintf("Server %d final:Getting %s", kv.me, args.Key)
+			reply.WrongLeader = false
+			kv.mu.Lock()
+			v, exist := kv.table[args.Key]
+			kv.mu.Unlock()
+			if exist {
+				reply.Value = v
+				reply.Err = OK
+			} else {
+				reply.Err = ErrNoKey
+			}
+		} else {
+			reply.WrongLeader = true
+		}
+	case <-time.After(1000 * time.Millisecond):
+		reply.WrongLeader = true
+	}
 }
 
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	DPrintf("Server %d:%s %s to %s", kv.me, args.Op, args.Value, args.Key)
+	//kv.mu.Lock()
+	DPrintf("Server %d lock:%s %s to %s", kv.me, args.Op, args.Value, args.Key)
+	index, _, isLeader := kv.rf.Start(Op{Opname: args.Op, Key: args.Key, Value: args.Value, ClientID: args.ClientID, OpNum: args.OpNum})
+	//kv.mu.Unlock()
+	if !isLeader {
+		reply.WrongLeader = true
+		return
+	}
+	kv.mu.Lock()
+	kv.chanTable[index] = make(chan Op, 100)
+	kv.mu.Unlock()
+	select {
+	case res := <-kv.chanTable[index]:
+		if res.Opname == args.Op && res.Key == args.Key && res.Value == args.Value {
+			reply.WrongLeader = false
+			reply.Err = OK
+		} else {
+			reply.WrongLeader = true
+		}
+	case <-time.After(1000 * time.Millisecond):
+		reply.WrongLeader = true
+	}
 }
 
 //
@@ -53,6 +123,22 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 func (kv *RaftKV) Kill() {
 	kv.rf.Kill()
 	// Your code here, if desired.
+}
+
+func (kv *RaftKV) apply(op Op) {
+	if !kv.checkDup(op.ClientID, op.OpNum) {
+		switch op.Opname {
+		case "Append":
+			DPrintf("Server %d final:Appending %s to %s", kv.me, op.Value, op.Key)
+			kv.table[op.Key] = kv.table[op.Key] + op.Value
+		case "Put":
+			DPrintf("Server %d final:Putting %s to %s", kv.me, op.Value, op.Key)
+			kv.table[op.Key] = op.Value
+		default:
+			//log.Fatal("This is impossible!")
+		}
+		kv.clientRequest[op.ClientID] = op.OpNum
+	}
 }
 
 //
@@ -81,7 +167,25 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.table = make(map[string]string)
+	kv.chanTable = make(map[int]chan Op)
+	kv.clientRequest = make(map[int64]int)
 
+	go func() {
+		for {
+			msg := <-kv.applyCh
+			//TODO: No one is receiving this except leader
+			//TODO: Add request timeout
+			kv.mu.Lock()
+			tmp := msg.Command.(Op)
+			DPrintf("%d receive msg back from RAFT, msg op is %s, msg key is %s, msg value is %s, locked", kv.me, tmp.Opname, tmp.Key, tmp.Value)
+			kv.apply(tmp)
+			if c, ok := kv.chanTable[msg.Index]; ok {
+				c <- tmp
+			}
+			kv.mu.Unlock()
+		}
+	}()
 	// You may need initialization code here.
 
 	return kv

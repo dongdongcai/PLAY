@@ -426,7 +426,7 @@ func (rf *Raft) replicationService() {
 
 func (rf *Raft) startElection() {
 	DPrintf("%d start leader election", rf.me)
-	rf.mu.Lock()
+	rf.mu.Lock() //need lock here for caching thing, this value must be flushed to memory.
 	rf.voteCount = 1
 	rf.mu.Unlock()
 	for i := 0; i < len(rf.peers); i++ {
